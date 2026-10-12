@@ -22,6 +22,10 @@ def init_db():
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       cliente_id INTEGER NOT NULL, mensagens INTEGER DEFAULT 0,
       registrado_em TEXT DEFAULT (datetime('now','localtime')));
+    CREATE TABLE IF NOT EXISTS tokens (
+      token TEXT PRIMARY KEY,
+      cliente_id INTEGER NOT NULL,
+      criado_em TEXT DEFAULT (datetime('now','localtime')));
     ''')
     db.commit(); db.close()
 
@@ -48,12 +52,19 @@ class API(BaseHTTPRequestHandler):
             self._json({'status':'ok','servico':'Meu Assistente IA - Sistema'})
         elif self.path.startswith('/api/saldo/'):
             cid = int(self.path.rsplit('/',1)[1])
+            auth = self.headers.get('Authorization','')
+            tok = auth.replace('Bearer ','').strip()
+            ok = db.execute('SELECT 1 FROM tokens WHERE token=? AND cliente_id=?',(tok,cid)).fetchone()
+            if not ok: db.close(); return self._json({'erro':'nao autorizado'},401)
             c = db.execute('SELECT * FROM clientes WHERE id=?',(cid,)).fetchone()
             if not c: db.close(); return self._json({'erro':'nao encontrado'},404)
             usado = db.execute('SELECT COALESCE(SUM(mensagens),0) FROM consumo WHERE cliente_id=?',(cid,)).fetchone()[0]
             lim = LIMITES.get(c['plano'],500)
             self._json({'nome':c['nome'],'plano':c['plano'],'usado':usado,'limite':lim,'restante':max(0,lim-usado)})
-        elif self.path == '/api/admin/resumo':
+        elif self.path.startswith('/api/admin/resumo'):
+            admin_key = os.environ.get('ADMIN_KEY','meu-chave-admin-2026')
+            given = self.headers.get('X-Admin-Key') or (self.path.split('key=')[1].split('&')[0] if 'key=' in self.path else '')
+            if given != admin_key: db.close(); return self._json({'erro':'acesso negado'},403)
             total = db.execute('SELECT COUNT(*) FROM clientes').fetchone()[0]
             planos = db.execute('SELECT plano, COUNT(*) q FROM clientes GROUP BY plano').fetchall()
             receita = sum(VALORES.get(r['plano'],0)*r['q'] for r in planos)
@@ -78,7 +89,14 @@ class API(BaseHTTPRequestHandler):
                 self._json({'ok':False,'erro':'e-mail ja cadastrado'},409)
         elif self.path == '/api/login':
             c = db.execute('SELECT * FROM clientes WHERE email=? AND senha=?',(d.get('email'),d.get('senha'))).fetchone()
-            self._json({'ok':True,'nome':c['nome'],'id':c['id']} if c else {'ok':False,'erro':'credenciais invalidas'}, 200 if c else 401)
+            if c:
+                import secrets as _s
+                tok = _s.token_urlsafe(24)
+                db.execute('INSERT INTO tokens (token,cliente_id) VALUES (?,?)',(tok,c['id']))
+                db.commit()
+                self._json({'ok':True,'nome':c['nome'],'id':c['id'],'token':tok})
+            else:
+                self._json({'ok':False,'erro':'credenciais invalidas'},401)
         elif self.path == '/api/consumo':
             db.execute('INSERT INTO consumo (cliente_id,mensagens) VALUES (?,?)',(d['cliente_id'],d.get('mensagens',1)))
             db.commit(); self._json({'ok':True})
