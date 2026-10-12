@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: sistema-assistente-ia
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: "python servidor.py"
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: PYTHON_VERSION
+        value: 3.12.0
